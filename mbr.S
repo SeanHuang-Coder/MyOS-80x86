@@ -1,4 +1,6 @@
 ; ***********************MBR程序，负责加载内核加载器，然后跳转到内核加载器
+; cs:ip从BIOS跳转到MBR时的值分别为0x0000:0x7c00
+%include "boot.inc"     ; 包含boot.inc文件
 section mbr vstart=0x7c00
     mov ax, cs
     mov ds, ax
@@ -54,10 +56,71 @@ ShowString:
     je ShowStringEnd
     jmp ShowString
 ShowStringEnd:
-    jmp $
+;====================从此处开始将loader载入内存====================
+    mov eax, LOADER_START_SECTOR        ; loader在磁盘中的起始扇区
+    mov ebx, LOADER_BASE_ADDR           ; loader在内存起始位置中的位置
+    mov cx, 1                           ; 要加载的扇区数
+
+    call rd_disk_m_16                   ; 将loader从磁盘加载到内存中
+    jmp LOADER_BASE_ADDR                ; 跳转到loader的内存起始位置中
 
 
 
+;====================读取硬盘的第n个扇区到内存中====================
+; 输入：eax=磁盘起始扇区，ebx=内存起始位置，cx=要读取的扇区数
+; 输出：无
+; shr的用法： ①shr reg, imm8，②shr reg, cl
+
+rd_disk_m_16:
+    mov esi, eax        ; 保存eax的值，因为后续会修改eax的值
+;1.设置读取硬盘的扇区数量
+    mov dx, 0x1F2       ; 读取硬盘的扇区数量寄存器编号
+    mov al, cl          ; al=要读取的扇区数
+    out dx, al          ; 将要读取的扇区数写入寄存器
+
+    mov eax, esi        ; 恢复eax值
+;2.设置读取硬盘的LBA地址，LBA一共28位
+    mov dx, 0x1F3       ; 设定LBA0~LBA7的寄存器编号
+    out dx, al          ; 将LBA0~LBA7写入寄存器
+
+    mov dx, 0x1F4       ; 设定LBA8~LBA15的寄存器编号
+    mov al, ah          ; LBA8~LBA15
+    out dx, al          ; 将LBA8~LBA15写入寄存器
+
+    mov dx, 0x1F5       ; 设定LBA16~LBA23的寄存器编号
+    shr eax, 16         ; LBA16~LBA23
+    out dx, al          ; 将LBA16~LBA23写入寄存器
+
+    mov dx, 0x1F6       ; 设定LBA24~LBA27的寄存器编号
+    shr eax, 8          ; LBA24~LBA27
+    or al, 11100000b    ; 设置硬盘的寻址模式、读取的硬盘 与 LBA24~LBA27
+    out dx, al          ; 将配置信息与LBA24~LBA27写入寄存器
+
+;3.发出读取硬盘命令
+    mov dx, 0x1F7       ; 读取硬盘的命令寄存器编号
+    mov al, 0x20        ; 读取硬盘的命令为0x20
+    out dx, al          ; 将读取硬盘的命令写入寄存器
+
+;4.轮询硬盘的状态寄存器，就绪后将硬盘的信息载入内存中
+.not_ready:
+    nop                 ; 这里添加一个nop指令，用于延时，不用一直轮询状态寄存器
+    in al, dx           ; 读取硬盘的状态寄存器的值
+    and al, 0x88        ; 取出硬盘的 busy位 与 ready位
+    cmp al, 0x08        ; 如果硬盘的ready位为1，则硬盘就绪
+    ; 若硬盘未就绪，则继续轮询状态寄存器
+    jne .not_ready
+
+;5.硬盘就绪后，循环的将硬盘的数据从硬盘的缓存中载入内存
+; 要读取一个sector的大小，即512B，循环读取256次
+    mov cx, 256         ; 循环次数
+    mov dx, 0x1F0       ; 读取硬盘的数据寄存器编号
+
+.loop_rd_data_from_disk_to_mem:
+    in ax, dx           ; 读取硬盘的数据寄存器的值
+    mov ds:[bx], ax     ; 将硬盘的数据写入内存中
+    add bx, 2           ; 挏次读取2字节，所以bx要加2
+    loop .loop_rd_data_from_disk_to_mem
+    ret
 
 ;;;;;;;;;;;;;;;;;;  打印字符串结束
 
