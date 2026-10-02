@@ -59,7 +59,7 @@ ShowStringEnd:
 ;====================从此处开始将loader载入内存====================
     mov eax, LOADER_START_SECTOR        ; loader在磁盘中的起始扇区
     mov ebx, LOADER_BASE_ADDR           ; loader在内存起始位置中的位置
-    mov cx, 1                           ; 要加载的扇区数
+    mov cx, 4                           ; 要加载的扇区数
 
     call rd_disk_m_16                   ; 将loader从磁盘加载到内存中
     jmp LOADER_BASE_ADDR                ; 跳转到loader的内存起始位置中
@@ -77,24 +77,25 @@ rd_disk_m_16:
     mov dx, 0x1F2       ; 读取硬盘的扇区数量寄存器编号
     mov al, cl          ; al=要读取的扇区数
     out dx, al          ; 将要读取的扇区数写入寄存器
+    mov di, cx          ; 保存要读取的扇区数
 
     mov eax, esi        ; 恢复eax值
 ;2.设置读取硬盘的LBA地址，LBA一共28位
-    mov dx, 0x1F3       ; 设定LBA0~LBA7的寄存器编号
-    out dx, al          ; 将LBA0~LBA7写入寄存器
+    mov dx, 0x1F3       ; 设定存放LBA的0~7位的寄存器编号
+    out dx, al          ; 将0~7位写入寄存器
 
-    mov dx, 0x1F4       ; 设定LBA8~LBA15的寄存器编号
-    mov al, ah          ; LBA8~LBA15
-    out dx, al          ; 将LBA8~LBA15写入寄存器
+    mov dx, 0x1F4       ; 设定存放LBA的8~15位的寄存器编号
+    mov al, ah          ; 8~15位
+    out dx, al          ; 将8~15位写入寄存器
 
-    mov dx, 0x1F5       ; 设定LBA16~LBA23的寄存器编号
-    shr eax, 16         ; LBA16~LBA23
-    out dx, al          ; 将LBA16~LBA23写入寄存器
+    mov dx, 0x1F5       ; 设定存放LBA的16~23位的寄存器编号
+    shr eax, 16         ; 16~23位
+    out dx, al          ; 将16~23位写入寄存器
 
-    mov dx, 0x1F6       ; 设定LBA24~LBA27的寄存器编号
-    shr eax, 8          ; LBA24~LBA27
-    or al, 11100000b    ; 设置硬盘的寻址模式、读取的硬盘 与 LBA24~LBA27
-    out dx, al          ; 将配置信息与LBA24~LBA27写入寄存器
+    mov dx, 0x1F6       ; 设定存放LBA的24~27位的寄存器编号
+    shr eax, 8          ; 24~27位
+    or al, 11100000b    ; 设置硬盘的寻址模式、读取的硬盘 与 24~27位
+    out dx, al          ; 将配置信息与24~27位写入寄存器
 
 ;3.发出读取硬盘命令
     mov dx, 0x1F7       ; 读取硬盘的命令寄存器编号
@@ -111,8 +112,11 @@ rd_disk_m_16:
     jne .not_ready
 
 ;5.硬盘就绪后，循环的将硬盘的数据从硬盘的缓存中载入内存
-; 要读取一个sector的大小，即512B，循环读取256次
-    mov cx, 256         ; 循环次数
+;  要读取4个sector的大小，即4*512B，循环读取4*256次
+    mov ax, di          ; 保存要读取的扇区数
+    mov cx, 256         ; 一个sector读取word大小数据需要读取的次数
+    mul cx
+    mov cx, ax          ; 循环次数
     mov dx, 0x1F0       ; 读取硬盘的数据寄存器编号
 
 .loop_rd_data_from_disk_to_mem:
