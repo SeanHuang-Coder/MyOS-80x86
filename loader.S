@@ -6,7 +6,7 @@
 %include "boot.inc"
 section loader vstart=LOADER_BASE_ADDR
 LOADER_STACK_TOP equ LOADER_BASE_ADDR
-jmp loader_start
+
 
 ; 构建gdt及其内部的段描述符
 GDT_BASE:                   ; 0号段描述符，空段，不使用
@@ -31,102 +31,152 @@ VIDEO_DESC:
     dd 0x80000007
     dd DESC_VIDEO_HIGH4
 
-GDT_SIZE equ $ - GDT_BASE
-GDT_LIMIT equ GDT_SIZE - 1
 
 times 60 dq 0           ; 预留60个段描述符的空间
 
-;=====================定义段选择子=====================
-; 代码段
-    SELECTOR_CODE equ ( 0x001 << 3 ) + TI_GDT + RPL0
-; 数据段与栈段
-    SELECTOR_DATA equ ( 0x002 << 3 ) + TI_GDT + RPL0
-; 显存段
-    SELECTOR_VIDEO equ ( 0x003 << 3 ) + TI_GDT + RPL0
+; 计算GDT表的大小
+GDT_SIZE equ $ - GDT_BASE
+GDT_LIMIT equ GDT_SIZE - 1
+
+; total_mem_bytes用于保存内存容量，以byte为单位
+; 当前位置的偏移是0x200=512字节(64个段描述符占64*8=512字节)
+; 所以total_mem_bytes的内存位置是0x900+0x200=0xB00
+total_mem_bytes dd 0            ; 4byte
+
 
 
 ; 定义gdt的指针，用于后续载入gdtr
 ; GDT一共6B，48位
-    gdt_ptr dw GDT_LIMIT
-            dd GDT_BASE
+gdt_ptr dw GDT_LIMIT
+        dd GDT_BASE
 
-; 定义一个测试字符串，loader处于实模式时打印该字符串
-    loadermsg db 'loader in real mode.', 0x00
+; 凑256byte对齐，total_mem_bytes4+gdt_ptr6+ards_buf244+ards_nr2
+ards_buf times 244 db 0         ; 244byte，用于存储段描述符的物理地址
+ards_nr dw 0                    ; 记录ARDS结构体的数量，2byte
+
 
 loader_start:
-;=====================使用bios的10h中断的13h子功能打印字符串=====================
+; 1. 首先使用0xE820中断获取内存信息
+; ======================
 ; 输入参数：
-; AH 子功能号
-; BH = 页码
-; BL = 属性
-; CX = 字符串长度
-; (DH, DL) = (行坐标，列坐标)
-; ES:BP = 字符串地址
-; AL = 显示输出方式，我们使用 方式1
-;       0——字符串中只含显示字符，期限是属性在BL中，显示后，光标位置不变
-;       1——字符串中只包含属性字节，属性字节在BL中，显示后，光标位置改变
-;       2——字符串中包含显示字符和属性字节，显示后，光标位置不变
-;       3——字符串中包含显示字符和属性字节，显示后，光标位置改变
+;   EAX = 0x0000E820
+;   EBX ARDS = 0 表示后续值位置，第一次调用时赋0
+;   ES:DI = 0:ards_buf
+;   ECX = 20
+;   EDX = 0x534D4150（"SMAP"的ASCII码），用于ES:DI中信息的回读校验
+; 输出参数：
+;   EAX 签名验证：0x534D4150（"SMAP"的ASCII码）
+;   ES:DI ARDS缓冲区地址：同输入值，此时已填充ARDS信息
+;   ECX 实际写入字节数：BIOS实际写入ARDS结构的字节数（≥20）
+;   EBX 后续值：下一个ARDS的位置，若为0表示已经是最后一个结构
+; ======================
+    xor ebx, ebx
+    mov di, ards_buf
+    mov edx, 0x534D4150
+.e820_get_mem_loop:
+    mov eax, 0x0000E820
+    mov ecx, 20
+    int 0x15
+    jc .e820_failed_try_e801    ; 如果CF为1，说明调用失败，尝试使用0xE801中断
 
-    mov sp, LOADER_BASE_ADDR
-    mov bp, loadermsg               ; 传入字符串地址
-    mov cx, 20                      ; 传入字符串长度
-    mov ax, 0x1301                  ; 子功能号
-    mov bx, 0x001F                  ; 0号页，不闪烁，黑色背景，亮度增强，白色字体
-    mov dx, 0x1800                  ; 在24行，0列打印字符串
-    int 0x10
+    add di, 20                  ; 调整ARDS保存在内存的位置
+    inc word [ards_nr]          ; 记录ARDS结构体的数量
+    cmp ebx, 0                  ; 如果ebx为0，说明没有后续值了
+    jnz .e820_get_mem_loop      ; 如果不是0，说明还有后续值，继续调用
 
-;=====================开始进入保护模式=====================
-; 进入保护模式的步骤：
-    ; 1. 加载gdt到gdtr
-    ; 2. 开启A20地址线
-    ; 3. 切换到保护模式
+; 采用冒泡排序，在所有的ards结构中，找出基地址最大的那个，BaseAddr + Length = mem_size(最大内存地址)
+    mov cx, [ards_nr]
+    mov ebx, ards_buf
+    xor edx, edx                ; 用于存储最大内存地址
 
-    ; 加载gdt到gdtr
-    lgdt [gdt_ptr]
-    ; 开启A20地址线
-    in al, 0x92
-    or al, 00000010b
-    out 0x92, al
-    ; 将CR0的PE位进行置位 cr0是32位寄存器，PE位在第1位上
-    mov eax, cr0
-    or eax, 0x00000001
-    mov cr0, eax
-    ; 执行到此处，表示保护模式已经启动
-    
-    ; 跳转刷新流水线
-    ; 刷新流水线的原因：CPU会提前取指 + 提前译码。在实模式下，CPU已经将保护模式的后续指令读到流水线，并完成了16位指令格式译码，
-    ; 而进入保护模式后，指令是32位的，而流水线还是16位的，所以需要刷新流水线,刷新流水线的方法，
-    ; 增加一个远跳转即可，这会触发流水线清空，然后重新取指、译码
-    jmp dword SELECTOR_CODE:p_mode_start
+.bubble_sort_loop:
+    mov eax, [ebx]              ; 获取ards结构的基地址
+    add eax, [ebx+8]            ; 基地址 + 长度 = 当前内存段的内存地址上限
+    add ebx, 20                 ; 调整到下一个ards结构
+    cmp edx, eax
+    jge .next_ards              ; 如果edx >= eax，说明当前结构的基地址 <= 最大内存地址，跳过
+
+    mov edx, eax                ; 更新最大内存地址
+
+ .next_ards:   
+    loop .bubble_sort_loop
+    jmp .get_mem_size_success   ; 所有ards结构都处理完了，跳转到成功处理
+
+; 2. 如果1失败，使用0xE801获取内存
+; ======================
+; 输入参数：
+;   AX = 0xE801
+; 输出参数：
+;   CF = 0 表示成功
+;   AX 以 1KB 为单位，显示 15MB 以下的内存容量
+;   BX 以 64KB 为单位，内存空间 16MB～4GB 中连续的单位数量
+; ======================
+.e820_failed_try_e801:
+    mov ax, 0xE801
+    int 0x15
+    jc .e801_failed_try_88      ; 如果CF为1，说明调用失败，尝试使用0x88中断
+
+    ; 1.计算低15MB的内存
+    mov cx, 1024
+    mul cx                      ; 高16位放在dx，低16位放在ax
+    shl edx, 16                 ; 将dx左移16位，与ax合并，得到低15MB的内存容量
+    and eax, 0x0000FFFF         ; 只保留低16位，得到低15MB的内存容量
+    or edx, eax                 ; 合并高16位和低16位，得到低15MB的内存容量
+    add edx, 0x100000           ; 加上低端1MB的扫描不到的内存
+    mov esi, edx                ; 备份
+
+    ; 2.计算高16MB之后的内存
+    xor eax, eax
+    mov ax, bx
+    mov ecx, 64*1024
+    mul ecx                      ; 高32位放在edx，低32位放在eax
+    add eax, esi                 ; 我们规划的内存在32位之内，所以只需要低32位
+    mov edx, eax
+    jmp .get_mem_size_success
 
 
-[bits 32]
-p_mode_start:
-    ;将各个选择子信息放入对应的段寄存器
-    mov ax, SELECTOR_DATA
-    mov ds, ax                  ; 数据段选择子
-    mov es, ax
-    mov ss, ax                  ; 栈段选择子
-    mov esp, LOADER_STACK_TOP   ; 栈指针初始化
-
-    mov ax, SELECTOR_VIDEO
-    mov gs, ax                  ; 显存段选择子
-
-    ; 在第1行的第0列输出一个字符串"hello hsl's protected mode."
-    mov ecx, 25                 ; 字符串长度
-    mov eax, 160                ; 显示的位置 160/2列
-    mov esi, 0
-
-
-ShowString:
-    mov bl, protected_print[esi]
-    mov [gs:eax], bl
-    inc esi
-    add eax, 2
-
-    loop ShowString
-
+; 3. 如果2失败，使用0x88获取内存
+; ======================
+; 输入参数：
+;   AH = 0x88
+; 输出参数：
+;   CF = 0 表示成功
+;   AX 以KB为单位数量，不包括低端1MB的内存，最大返回值为0xfc00（63MB）
+; ======================
+.e801_failed_try_88:
+    mov ah, 0x88
+    int 0x15
+    jc .error_hlt      ; 如果CF为1，说明获取失败，已经无其他方式获取内存，跳转到错误处理函数
+    and eax, 0x0000FFFF         ; 只保留低16位，得到内存容量
+    mov ecx, 1024
+    mul ecx                      ; 高32位放在edx，低32位放在eax
+    add eax, 0x100000           ; 加上低端1MB的扫描不到的内存
+    mov edx, eax
+.get_mem_size_success:
+    mov [total_mem_bytes], edx
     jmp $
 
-    protected_print db "hello hsl's protected mode."
+.error_hlt:
+;;;;;;;;;;;;;;;;;;打印字符串;;;;;;;;;;;;;;;;;;
+; 直接使用显存输出字符串
+; 输出闪烁背景为绿色，前景为红色的字符串
+
+    mov ax, 0xB800          ; 显存地址段地址
+    mov gs, ax
+; 使用循环输出字符串
+    mov di, 0x0000
+    mov bx, 0           ; 字符串索引
+    mov ch, 10101100b
+ShowString:
+    mov cl, message[bx]
+    mov word gs:[di], cx
+
+    add di, 2
+    inc bx
+    cmp cl, 0x00
+    je ShowStringEnd
+    jmp ShowString
+ShowStringEnd:
+    jmp $
+
+    message db "error: get memory failed."

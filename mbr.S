@@ -62,7 +62,7 @@ ShowStringEnd:
     mov cx, 4                           ; 要加载的扇区数
 
     call rd_disk_m_16                   ; 将loader从磁盘加载到内存中
-    jmp LOADER_BASE_ADDR                ; 跳转到loader的内存起始位置中
+    jmp LOADER_BASE_ADDR + 0x300                ; 跳转到loader的内存起始位置中
 
 
 
