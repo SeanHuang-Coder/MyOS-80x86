@@ -65,3 +65,15 @@ RPL3 equ          3
 TI_GDT equ        000b
 TI_LDT equ        100b
 
+;---------------------------页目录表地址信息--------------------------
+PAGE_DIR_TABLE_POS equ 0x100000             ; 1MB
+
+;---------------------------页表相关属性--------------------------
+; present
+PG_P equ            1b
+; read/write
+PG_RW_R equ         00b
+PG_RW_W equ         10b
+; user/supervisor
+PG_US_U equ         100b
+PG_US_S equ         000b
