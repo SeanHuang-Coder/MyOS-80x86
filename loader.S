@@ -54,6 +54,7 @@ times 60 dq 0           ; 预留60个段描述符的空间
     loadermsg db 'loader in real mode.', 0x00
 
 ; ==================== 创建页目录表及页表====================
+[bits 32]
 setup_page:
     ; 保存上下文环境
     push ebp
@@ -70,7 +71,7 @@ setup_page:
     mov ecx, 4096
     mov esi, 0
 .clear_page_dir:
-    mov [PAGE_DIR_TABLE_POS + esi], 0
+    mov byte [PAGE_DIR_TABLE_POS + esi], 0
     inc esi
     loop .clear_page_dir
 
@@ -85,13 +86,13 @@ setup_page:
     ; 让第0号目录项与第0xC00号目录项指向相同的页表，他们都指向第0号页表
     ; 低端1MB的内存范围是0x000000~0x00100000，在启动分页以后，loader仍然使用的是这段内存，所以我们需要保证这段虚拟地址的0x00000000~0x00100000仍然映射到物理内存的0x00000000~0x00100000
     ; 所以第0号页表前256个页表项需要指向低端的1MB物理内存
-    mov [PAGE_DIR_TABLE_POS + 0x0], eax
+    mov dword [PAGE_DIR_TABLE_POS + 0x0], eax
     ; 高端地址3GB~4GB是内核地址空间，我们这里使用了低端1MB存放内核程序，所以从3GB开始的页表的页表项需要指向低端的1MB物理内存
-    mov [PAGE_DIR_TABLE_POS + 0xC00], eax
+    mov dword [PAGE_DIR_TABLE_POS + 0xC00], eax
 
     ; 将最后一个页目录项指向页目录表自己(1023*4B)
     sub eax, 0x1000
-    mov [PAGE_DIR_TABLE_POS + 4092], eax
+    mov dword [PAGE_DIR_TABLE_POS + 4092], eax
 
     ; 创建第0号页表的前256个页表项PTE，使其映射到低端1MB物理内存
     mov ecx, 256
@@ -123,11 +124,11 @@ setup_page:
     pop ecx
     pop ebx
     pop eax
-    pop ebp
     mov esp, ebp
+    pop ebp
     ret
 
-
+[bits 16]
 loader_start:
 ;=====================使用bios的10h中断的13h子功能打印字符串=====================
 ; 输入参数：
@@ -192,18 +193,34 @@ p_mode_start:
     call setup_page             ; 构建页目录表
     sgdt [gdt_ptr]              ; 将gdtr的值暂时保存到gdt_ptr中
     ; 将段描述符的地址改为虚拟地址
-    ; TODO
+    mov ebx, [gdt_ptr + 2]      ; 将GDT表的基址加载到ebx中
 
+    ; 在0x0~0x100000地址空间中的段描述符，需要映射到内核空间，所以需要加上0xC0000000，将基址映射到内核空间
+    or dword [gdt_ptr + 2], 0xC0000000      ; 修改GDT表的基址为虚拟地址
+    or dword [ebx + 3*8 + 4], 0xC0000000    ; 修改显存段的基址为虚拟地址
+    or esp, 0xC0000000                      ; 修改栈指针为虚拟地址
 
+; 开启分页机制
+    ;  1. 准备页目录表和页表 已完成
+    ;  2. 将页目录表地址写入CR3寄存器
+    mov eax, PAGE_DIR_TABLE_POS
+    mov cr3, eax
+    ;  3. 设置CR0的PG位
+    mov eax, cr0
+    or eax, 0x80000000
+    mov cr0, eax
+
+    lgdt [gdt_ptr]              ; 重新加载gdt到gdtr
     ; 在第1行的第0列输出一个字符串"hello hsl's protected mode."
-    mov ecx, 27                 ; 字符串长度
+    mov ecx, 26                 ; 字符串长度
     mov eax, 160                ; 显示的位置 160/2列
     mov esi, 0
 
+    mov bh, 0xAF                ; 闪烁黑底高亮白色字体
 
 ShowString:
     mov bl, protected_print[esi]
-    mov [gs:eax], bl
+    mov [gs:eax], bx
     inc esi
     add eax, 2
 
@@ -211,4 +228,4 @@ ShowString:
 
     jmp $
 
-    protected_print db "hello hsl's protected mode."
+    protected_print db "hello hsl's page mechanism"
