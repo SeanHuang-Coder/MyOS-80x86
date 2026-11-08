@@ -128,6 +128,144 @@ setup_page:
     pop ebp
     ret
 
+; ==================== 加载内核====================
+[bits 32]
+; @param eax = start sector
+; @param ebx = base address
+; @param ecx = sector count
+rd_disk_m_32:
+    mov esi, eax        ; 保存eax的值，因为后续会修改eax的值
+;1.设置读取硬盘的扇区数量
+    mov dx, 0x1F2       ; 读取硬盘的扇区数量寄存器编号
+    mov al, cl          ; al=要读取的扇区数
+    out dx, al          ; 将要读取的扇区数写入寄存器
+    mov edi, ecx          ; 保存要读取的扇区数
+
+    mov eax, esi        ; 恢复eax值
+;2.设置读取硬盘的LBA地址，LBA一共28位
+    mov dx, 0x1F3       ; 设定存放LBA的0~7位的寄存器编号
+    out dx, al          ; 将0~7位写入寄存器
+
+    mov dx, 0x1F4       ; 设定存放LBA的8~15位的寄存器编号
+    mov al, ah          ; 8~15位
+    out dx, al          ; 将8~15位写入寄存器
+
+    mov dx, 0x1F5       ; 设定存放LBA的16~23位的寄存器编号
+    shr eax, 16         ; 16~23位
+    out dx, al          ; 将16~23位写入寄存器
+
+    mov dx, 0x1F6       ; 设定存放LBA的24~27位的寄存器编号
+    shr eax, 8          ; 24~27位
+    or al, 11100000b    ; 设置硬盘的寻址模式、读取的硬盘 与 24~27位
+    out dx, al          ; 将配置信息与24~27位写入寄存器
+
+;3.发出读取硬盘命令
+    mov dx, 0x1F7       ; 读取硬盘的命令寄存器编号
+    mov al, 0x20        ; 读取硬盘的命令为0x20
+    out dx, al          ; 将读取硬盘的命令写入寄存器
+
+;4.轮询硬盘的状态寄存器，就绪后将硬盘的信息载入内存中
+.not_ready:
+    nop                 ; 这里添加一个nop指令，用于延时，不用一直轮询状态寄存器
+    in al, dx           ; 读取硬盘的状态寄存器的值
+    and al, 0x88        ; 取出硬盘的 busy位 与 ready位
+    cmp al, 0x08        ; 如果硬盘的ready位为1，则硬盘就绪
+    ; 若硬盘未就绪，则继续轮询状态寄存器
+    jne .not_ready
+
+;5.硬盘就绪后，循环的将硬盘的数据从硬盘的缓存中载入内存
+;  要读取200个sector的大小，即200*512B，循环读取200*256次
+    mov ax, di          ; 保存要读取的扇区数
+    mov cx, 256         ; 一个sector读取word大小数据需要读取的次数
+    mul cx
+    mov cx, ax          ; 循环次数
+    mov dx, 0x1F0       ; 读取硬盘的数据寄存器编号
+
+.loop_rd_data_from_disk_to_mem:
+    in ax, dx           ; 读取硬盘的数据寄存器的值
+    mov ds:[ebx], ax     ; 将硬盘的数据写入内存中
+    add ebx, 2           ; 挏次读取2字节，所以ebx要加2
+    loop .loop_rd_data_from_disk_to_mem
+    ret
+
+; ==================== 解析kernel.bin的头文件====================
+; 主要工作：讲解析后的segment、section复制到对应的内存地址
+kernel_init:
+    ; 清空寄存器
+    xor eax, eax
+    xor ebx, ebx        ; 记录程序头表地址，        文件开头偏移28B处，大小4B
+    xor ecx, ecx        ; 记录程序头表entry数量，   文件开头偏移44B处，大小2B
+    xor edx, edx        ; 记录程序头表entry的大小， 文件开头偏移42B处，大小2B
+
+
+    mov ebx, [KERNEL_BIN_BASE_ADDR + 28]     ; 读取程序头表偏移地址
+    mov cx,  [KERNEL_BIN_BASE_ADDR + 44]     ; 读取程序头表entry数量
+    mov dx,  [KERNEL_BIN_BASE_ADDR + 42]     ; 读取程序头表entry的大小
+
+    add ebx, KERNEL_BIN_BASE_ADDR            ; 计算程序头表地址的物理内存地址
+
+
+    ; 解析程序头表中的每个segment entry
+.each_segment_entry:    ; 解析segment entry
+    cmp byte [ebx], PT_NULL
+    je .PT_NULL
+    ; ======如果不是空segment，解析segment entry
+    ; 使用memcpy(dst, src, size)来复制segment entry到内存中
+        ; struct Elf32_Phdr {
+        ;     // 第4行
+        ;     Elf32_Word    p_type;        // 说明程序中段的类型
+        ;     Elf32_Off     p_offset;      // 指明本段在文件内的起始偏移字节
+        ;     Elf32_Addr    p_vaddr;       // 指明本段在内存中的起始虚拟地址
+        ;     //第5行
+        ;     Elf32_Addr    p_paddr;       // 仅用于物理地址相关的系统中，因为System V忽略用户程序中所有的物理地址，所以此项暂且保留，未设定
+        ;     Elf32_Word    p_filesz;      // 指明本段在文件中的大小
+        ;     Elf32_Word    p_memsz;       // 指明本段在内存中的大小
+        ;     Elf32_Word    p_flags;       // 指明与本段相关的标志，标志取值见表p_flags
+        ;     // 第6行
+        ;     Elf32_Word    p_align;       // 指明本段在文件和内存中的对齐方式，值为或1，表示不对齐，否则p_align应该是2的幂次数
+        ; };
+    push dword [ebx + 16]                       ; 压入segment entry的大小 size
+
+    mov eax,   [ebx + 4]                        ; 读取segment entry在文件中的偏移字节
+    add eax, KERNEL_BIN_BASE_ADDR               ; 计算segment entry在内存中的物理地址
+    push dword eax                              ; 压入segment entry在内存中的物理地址 src
+
+    push dword [ebx + 8]                        ; 压入segment entry在内存中的起始虚拟地址 dst
+
+    call mem_cpy
+    add esp, 12                                 ; 清空栈
+
+.PT_NULL:
+    add ebx, edx
+    loop .each_segment_entry
+    ret
+
+
+; ==================== memcpy(dst, src, size) ====================
+; 栈帧布局： 从高地址到低地址
+; size src dst eip ebp
+mem_cpy:
+    cld                         ; 清除方向标志位，使rep movsb从低地址向高地址复制
+    ; 保存环境
+    push ebp
+    mov ebp, esp
+    push ecx                    ; 我们需要用到ecx寄存器，所以要保存它
+
+
+    mov edi, [ebp + 8]          ; dst
+    mov esi, [ebp + 12]         ; src
+    mov ecx, [ebp + 16]         ; size
+    ; movsb movsw movs
+    ; movs表示mov string，后面的b、w、d表示表示byte、word、dword
+    ; ecx
+    ; rep表示repeat，该指令按照ecx寄存器中指定的次数重复执行movs<b/w/d>指令
+    rep movsb                   ; 复制size个字节，
+
+    ; 恢复环境
+    pop ecx
+    pop ebp
+    ret
+
 [bits 16]
 loader_start:
 ;=====================使用bios的10h中断的13h子功能打印字符串=====================
@@ -189,7 +327,14 @@ p_mode_start:
     mov ax, SELECTOR_VIDEO
     mov gs, ax                  ; 显存段选择子
 
+    ; ==================== 加载内核====================
+    mov eax, KERNEL_START_SECTOR    ; kernel在磁盘中的起始扇区
+    mov ebx, KERNEL_BIN_BASE_ADDR   ; kernel在内存中的基址
+    mov ecx, 200                    ; kernel预留的大小，从硬盘中加载200个扇区到内存中
+    call rd_disk_m_32
 
+
+    ; ==================== 构建页目录表====================
     call setup_page             ; 构建页目录表
     sgdt [gdt_ptr]              ; 将gdtr的值暂时保存到gdt_ptr中
     ; 将段描述符的地址改为虚拟地址
@@ -200,7 +345,7 @@ p_mode_start:
     or dword [ebx + 3*8 + 4], 0xC0000000    ; 修改显存段的基址为虚拟地址
     or esp, 0xC0000000                      ; 修改栈指针为虚拟地址
 
-; 开启分页机制
+    ; ==================== 开启分页机制====================
     ;  1. 准备页目录表和页表 已完成
     ;  2. 将页目录表地址写入CR3寄存器
     mov eax, PAGE_DIR_TABLE_POS
@@ -211,12 +356,24 @@ p_mode_start:
     mov cr0, eax
 
     lgdt [gdt_ptr]              ; 重新加载gdt到gdtr
+
+    ; 进入内核
+    jmp SELECTOR_CODE:enter_kernel
+
+enter_kernel:
+    call kernel_init             ; 解析kernel.bin的头文件，将segment、section复制到对应的内存地址
+    mov esp, 0xC009f000         ; 这里使用0x9F000作为栈底指针
+    jmp KERNEL_ENTER_POINT      ; 跳转到内核进入点，开始执行内核代码
+
+
+
     ; 在第1行的第0列输出一个字符串"hello hsl's protected mode."
     mov ecx, 26                 ; 字符串长度
     mov eax, 160                ; 显示的位置 160/2列
     mov esi, 0
 
     mov bh, 0xAF                ; 闪烁黑底高亮白色字体
+    call ShowString
 
 ShowString:
     mov bl, protected_print[esi]

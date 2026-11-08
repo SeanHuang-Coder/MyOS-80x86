@@ -77,3 +77,9 @@ PG_RW_W equ         10b
 ; user/supervisor
 PG_US_U equ         100b
 PG_US_S equ         000b
+
+;---------------------------加载内核相关配置-------------------------------
+KERNEL_START_SECTOR         equ 0x9              ; 内核在磁盘中的起始扇区
+KERNEL_BIN_BASE_ADDR        equ 0x70000          ; 内核原文件kernel.bin加载到内存的地址
+PT_NULL                     equ 0                ; 判断segment是否为空
+KERNEL_ENTER_POINT          equ 0xC0001500           ; 内核进入点

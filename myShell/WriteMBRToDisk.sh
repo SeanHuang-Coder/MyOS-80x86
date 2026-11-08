@@ -6,7 +6,7 @@
 ##count=COUNT：write COUNT blocks，拷贝的块数
 ##seek=blocks：跳过blocks个块，再开始写入
 ##conv=notrunc：不截断输出文件，只写入实际数据
-# MBR写入硬盘的 0柱面 0磁头 1扇区，由BIOS加载到内存的0x7c00地址
+# MBR写入硬盘的 0柱面 0磁头 第0个扇区，由BIOS加载到内存的0x7c00地址
 dd if=mbr.bin of=Myhd60M.img bs=512 count=1 conv=notrunc
 
 
