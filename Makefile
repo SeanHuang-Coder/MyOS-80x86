@@ -21,7 +21,7 @@ compileLoader:
 
 # 编译并写入kernel到硬盘
 compileKernel:
-	gcc -m32 -c ${KERNEL_DIR}/main.c -o main.o
+	gcc -m32 -c ${KERNEL_DIR}/main.c -o ${KERNEL_DIR}/main.o
 	ld -m elf_i386 -o ${BIN_DIR}/kernel.bin ${KERNEL_DIR}/main.o -e main -Ttext 0xC0001500
 	dd if=${BIN_DIR}/kernel.bin of=Myhd60M.img bs=512 count=200 seek=9 conv=notrunc
 	@echo "kernel编译并写入硬盘完成"
