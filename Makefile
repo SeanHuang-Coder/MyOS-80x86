@@ -1,6 +1,13 @@
 BIN_DIR = binDir
 KERNEL_DIR = kernel
+LIB_DIR = lib
+LIB_KERNEL_DIR = lib/kernel
 
+
+
+KERNEL_TARGET = ${KERNEL_DIR}/*.o ${LIB_KERNEL_DIR}/*.o
+#导出所有的目录
+export BIN_DIR KERNEL_DIR LIB_DIR LIB_KERNEL_DIR
 
 ########################启动bochs########################
 bochs: compileMBR compileLoader compileKernel
@@ -21,8 +28,7 @@ compileLoader:
 
 # 编译并写入kernel到硬盘
 compileKernel:
-	gcc -m32 -c ${KERNEL_DIR}/main.c -o ${KERNEL_DIR}/main.o
-	ld -m elf_i386 -o ${BIN_DIR}/kernel.bin ${KERNEL_DIR}/main.o -e main -Ttext 0xC0001500
+	make -f kernel.mk
 	dd if=${BIN_DIR}/kernel.bin of=Myhd60M.img bs=512 count=200 seek=9 conv=notrunc
 	@echo "kernel编译并写入硬盘完成"
 
@@ -30,6 +36,9 @@ compileKernel:
 .PHONY: clean
 clean:
 	@echo "清理"
-	rm -f bochs.out ${KERNEL_DIR}/*.o \
-	${BIN_DIR}/mbr.bin ${BIN_DIR}/loader.bin ${BIN_DIR}/kernel.bin
+
+	rm -f bochs.out \
+		${BIN_DIR}/mbr.bin ${BIN_DIR}/loader.bin ${BIN_DIR}/kernel.bin \
+		${KERNEL_TARGET}
+
 	@echo "清理完成"

@@ -15,6 +15,9 @@
 binDir/			# bin文件
 kernel/			#内核主代码
 myShell/		#使用到的一些脚本，只用到部分
+lib/			#库文件
+    user/		#用户库文件
+    kernel/	    #内核库文件
 ```
 
 
